@@ -3,20 +3,19 @@
 
 <head>
   <meta charset="utf-8">
-  <meta name="description"
-    content="">
+  <meta name="description" content="">
   <meta name="keywords" content="SPDiffusion, Multi-concept Generation">
   <meta name="viewport" content="width=device-width, initial-scale=1">
 
   <title>SALV</title>
 
-<script>
-  window.dataLayer = window.dataLayer || [];
-  function gtag(){dataLayer.push(arguments);}
-  gtag('js', new Date());
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag() { dataLayer.push(arguments); }
+    gtag('js', new Date());
 
-  gtag('config', 'G-MRQC0YFE17');
-</script>
+    gtag('config', 'G-MRQC0YFE17');
+  </script>
 
   <script type="module" src="https://unpkg.com/@google/model-viewer/dist/model-viewer.min.js"></script>
 
@@ -50,7 +49,7 @@
     }
   </style>
 
-  
+
   <!-- <nav class="navbar" role="navigation" aria-label="main navigation">
     <div class="navbar-brand">
       <a role="button" class="navbar-burger" aria-label="menu" aria-expanded="false">
@@ -91,13 +90,13 @@
   <section class="hero">
     <div class="hero-body">
       <div class="container">
-        
+
         <div class="container has-text-centered">
-          
+
           <h1 class="title is-1 publication-title">
             QiMeng-SALV: Signal-Aware Learning for Verilog Code Generation
           </h1>
-          
+
           <div class="is-size-5 publication-authors">
             <div class="author-block">
               <a href="https://github.com/zy1xxx">Yang Zhang</a><sup>12</sup>,
@@ -115,9 +114,10 @@
             Qi Guo<sup>1</sup>,
             Yunji Chen<sup>12</sup>,
           </div>
-          
+
           <div class="is-size-5 publication-authors">
-            <span class="author-block"><sup>1</sup>State Key Lab of Processors, Institute of Computing Technology, CAS</span><br>
+            <span class="author-block"><sup>1</sup>State Key Lab of Processors, Institute of Computing Technology,
+              CAS</span><br>
             <span class="author-block"><sup>2</sup>University of Chinese Academy of Sciences </span><br>
             <span class="author-block"><sup>3</sup>University of Science and Technology of China</span><br>
             <!-- <br>
@@ -140,8 +140,7 @@
               </span>
 
               <span class="link-block">
-                <a href="https://github.com/zy1xxx/SALV"
-                  class="external-link button is-normal is-rounded is-dark">
+                <a href="https://github.com/zy1xxx/SALV" class="external-link button is-normal is-rounded is-dark">
                   <span class="icon">
                     <i class="fab fa-github"></i>
                   </span>
@@ -190,15 +189,58 @@
 
           <div class="content has-text-justified">
             <p>
-              The remarkable progress of Large Language Models (LLMs) presents promising opportunities for Verilog code generation which is significantly important for automated circuit design. The lacking of meaningful functional rewards hinders the preference optimization based on Reinforcement Learning (RL) for producing functionally correct Verilog code. In this paper, we propose Signal-Aware Learning for Verilog code generation (QiMeng-SALV) by leveraging code segments of functionally correct output signal to optimize RL training. Considering Verilog code specifies the structural interconnection of hardware gates and wires so that different output signals are independent, the key insight of QiMeng-SALV is to extract verified signal-aware implementations in partially incorrect modules, so as to enhance the extraction of meaningful functional rewards. Roughly, we verify the functional correctness of signals in generated module by comparing with that of reference module in the training data. Then abstract syntax tree (AST) is employed to identify signal-aware code segments which can provide meaningful functional rewards from erroneous modules. Finally, we introduce signal-aware DPO which is optimized on the correct signal-level code segments, thereby preventing noise and interference from incorrect signals.
-The proposed QiMeng-SALV underscores the paradigm shift from conventional module-level to fine-grained signal-level optimization in Verilog code generation, addressing the issue of insufficient functional rewards.
-Experiments demonstrate that our method achieves state-of-the-art performance on VerilogEval and RTLLM, with a 7B parameter model matching the performance of the DeepSeek v3 671B model and significantly outperforming the leading open-source model CodeV trained on the same dataset.
+              The remarkable progress of Large Language Models (LLMs) presents promising opportunities for Verilog code
+              generation which is significantly important for automated circuit design. The lacking of meaningful
+              functional rewards hinders the preference optimization based on Reinforcement Learning (RL) for producing
+              functionally correct Verilog code. In this paper, we propose Signal-Aware Learning for Verilog code
+              generation (QiMeng-SALV) by leveraging code segments of functionally correct output signal to optimize RL
+              training. Considering Verilog code specifies the structural interconnection of hardware gates and wires so
+              that different output signals are independent, the key insight of QiMeng-SALV is to extract verified
+              signal-aware implementations in partially incorrect modules, so as to enhance the extraction of meaningful
+              functional rewards. Roughly, we verify the functional correctness of signals in generated module by
+              comparing with that of reference module in the training data. Then abstract syntax tree (AST) is employed
+              to identify signal-aware code segments which can provide meaningful functional rewards from erroneous
+              modules. Finally, we introduce signal-aware DPO which is optimized on the correct signal-level code
+              segments, thereby preventing noise and interference from incorrect signals.
+              The proposed QiMeng-SALV underscores the paradigm shift from conventional module-level to fine-grained
+              signal-level optimization in Verilog code generation, addressing the issue of insufficient functional
+              rewards.
+              Experiments demonstrate that our method achieves state-of-the-art performance on VerilogEval and RTLLM,
+              with a 7B parameter model matching the performance of the DeepSeek v3 671B model and significantly
+              outperforming the leading open-source model CodeV trained on the same dataset.
             </p>
           </div>
         </div>
       </div>
       <!--/ Abstract. -->
 
+  </section>
+
+  <section class="section">
+    <div class="container is-max-desktop">
+
+      <!-- Abstract. -->
+      <div class="columns is-centered has-text-centered">
+        <div class="column is-four-fifths">
+          <h2 class="title is-3">Motivation</h2>
+          
+          <div class="container is-max-desktop">
+            <img src="./static/images/motivation.svg" height="100%">
+          </div>
+
+          <div class="content has-text-justified">
+            <p>
+              Due to Verilog's characteristics of relatively independent and parallel signals, we can extract the code implementation of a specific signal through AST. 
+              Here there are two output signals, we can separately extract their related code implementations. 
+              Among them, the implementation of signal <span style="color: orange;">a</span> is incorrect while signal <span style="color: green;">d</span> is correctly implemented. 
+              We can utilize the code implementation of the correct signal <span style="color: green;">d</span> to provide functional correctness rewards for RL.
+            </p>
+          </div>
+
+        </div>
+      </div>
+      <!--/ Abstract. -->
+    </div>
   </section>
 
   <section class="section">
@@ -215,9 +257,14 @@ Experiments demonstrate that our method achieves state-of-the-art performance on
 
           <div class="content has-text-justified">
             <p>
-              (a) The proposed QiMeng-SALV comprises three stage: signal-aware verification, signal-aware code extraction, and signal-aware DPO training. <br>
-              (b) In signal-aware verification stage, verification is performed by analyzing output signal discrepancies between generated modules and their reference counterparts, allowing precise identification of correctly functioning output signals. <br>
-              (c) In signal-aware code extraction stage, AST parsing reveals critical dependencies between output signals and intermediate signals to obtain relevant preferred and dispreferred code segments pertinent to the contrastive signals.
+              (a) The proposed QiMeng-SALV comprises three stage: signal-aware verification, signal-aware code
+              extraction, and signal-aware DPO training. <br>
+              (b) In signal-aware verification stage, verification is performed by analyzing output signal discrepancies
+              between generated modules and their reference counterparts, allowing precise identification of correctly
+              functioning output signals. <br>
+              (c) In signal-aware code extraction stage, AST parsing reveals critical dependencies between output
+              signals and intermediate signals to obtain relevant preferred and dispreferred code segments pertinent to
+              the contrastive signals.
             </p>
           </div>
 
@@ -227,36 +274,59 @@ Experiments demonstrate that our method achieves state-of-the-art performance on
     </div>
   </section>
 
-  <div class="section">
-    <div class="container">
-      <h2 class="title has-text-centered">Main Results</h3>
+  <section class="section">
+    <div class="container is-max-desktop">
 
-      <div id="results-carousel" class="carousel results-carousel carousel-control-prev carousel-inner" data-ride="carousel">
-        <div class="results-item">
-          <img src="./static/images/VerilogEval.png", width="100%">
-        </div>
-      </div>
-      
-      <div id="results-carousel" class="carousel results-carousel carousel-control-prev carousel-inner" data-ride="carousel">
-        <div class="results-item">
-          <img src="./static/images/RTLLM.png", width="100%">
-        </div>
-      </div>
+      <!-- Abstract. -->
+      <div class="columns is-centered has-text-centered">
+        <div class="column is-four-fifths">
+          <h2 class="title is-3">Main Results</h2>
 
-      <div class="content has-text-centered">
-        <p>
+          <div class="content has-text-justified">
+            <p>
+            We conduct comprehensive evaluations on the VerilogEval (including VerilogEval1.0 and VerilogEval2.0) and RTLLM benchmarks (including RTLLM v1.1 and RTLLM v2.0).
+            For baseline comparisons, we conduct a comprehensive comparison between our proposed method and several baseline approaches, categorized into three groups: <br>
+            1. General-purpose Foundation Models: GPT-3.5, GPT-4o, GPT-4, and DeepSeek-v3. <br>
+            2. General Code Models: CodeQwen1.5, Qwen2.5 Coder Instruct and Deepseek Coder. <br>
+            3. Domain-Specialized Verilog Models: Including RTL Coder, CodeV, Origen, VeriSeek and VeriPrefer. <br>
+            Comparison results in Table 1 and Table 2 show that QiMeng-SALV establishes new state-of-the-art results across both benchmarks in the open-source domain. 
+          </p>
+          </div>
           
-        </p>
+          <div class="container is-max-desktop">
+            <img src="./static/images/VerilogEval.png" width="90%">
+          </div>
+          
+          <div class="content has-text-justified">
+            <p>
+              As shown in Table 1, in the VerilogEval evaluations, QiMeng-SALV demonstrates leading performance in both specification understanding and code completion tasks among open-source solutions, achieving performance comparable to DeepSeek-V3 on the VerilogEval1.0 Machine benchmark, and outperforming GPT-4o on the VerilogEval2.0 completion task.
+          </p>
+          </div>
+
+          <div class="container is-max-desktop">
+            <img src="./static/images/RTLLM.png" width="90%">
+          </div>
+
+          <div class="content has-text-justified">
+            <p>
+              As shown in Table 2, QiMeng-SALV achieves a remarkable 62.6% functional pass@1 accuracy on the RTLLM v1.1 benchmark and 62.0% on RTLLM v2.0 with merely 7B parameters, significantly exceeding all existing open-source alternatives and rivaling the performance of DeepSeek-v3, a 671B parameter model. Impressively, its functional pass@10 accuracy reaches 81.1% on RTLLM v1.1, surpassing DeepSeek-v3's 72.4%. 
+          </p>
+          </div>
+
+        </div>
       </div>
+      <!--/ Abstract. -->
     </div>
-  </div class="section">
+  </section>
 
   
+
+
   <section class="section" id="BibTeX">
     <div class="container content is-max-desktop">
       <h2 class="title">BibTeX</h2>
       <pre><code>null</code></pre>
-  </div>
+    </div>
   </section>
 
 
