@@ -1,0 +1,28 @@
+{
+    "SALV_SFT_Data":{
+        "file_name": "../../SFT/Data/sft_training_data.json",
+        "formatting": "alpaca",
+        "columns": {
+            "prompt": "instruction",
+            "response": "response"
+        }
+    },
+    "SALV_SA_DPO_Data": {
+        "file_name": "../../SFT/Data/sa_dpo_training_data.json",
+        "ranking": true,
+        "columns": {
+            "prompt": "instruction",
+            "chosen": "chosen",
+            "rejected": "rejected"
+        }
+    },
+    "SALV_SA_DPO_Data_Spec": {
+        "file_name": "../../SFT/Data/sa_dpo_training_data_spec.json",
+        "ranking": true,
+        "columns": {
+            "prompt": "instruction",
+            "chosen": "chosen",
+            "rejected": "rejected"
+        }
+    }
+}
