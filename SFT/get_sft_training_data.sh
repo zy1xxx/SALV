@@ -1,0 +1,3 @@
+python ../Utils/rollout.py --model_name Qwen/Qwen2.5-Coder-7B-Instruct --seed_data Data/codev_135k_seed_data.json --rollout_save_path Data/rollout_data.json --n 5 
+python ../Utils/sim.py --seed_data Data/codev_135k_seed_data.json --rollout_data Data/rollout_data.json --sim_info_path Data/sim_info_data.json
+python ./gen_sft_training_data.py --seed_data Data/codev_135k_seed_data.json --rollout_data Data/rollout_data.json --sim_info_path Data/sim_info_data.json --training_data_save_path Data/sft_training_data.json
