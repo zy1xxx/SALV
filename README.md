@@ -8,7 +8,7 @@ Resources:
 - Webpage: https://zy1xxx.github.io/SALV/
 - Paper: https://arxiv.org/abs/2510.19296
 - Model: https://huggingface.co/TabCanNotTab/SALV-Qwen2.5-Coder-7B-Instruct
-
+- Dataset: https://huggingface.co/datasets/TabCanNotTab/SALV-dataset
 
 ## Usage 
 ```
