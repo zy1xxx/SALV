@@ -1,0 +1,14 @@
+### Note: DO NOT use quantized model or quantization_bit when merging lora adapters
+
+### model
+model_name_or_path : ../SFT/Model/SALV-SFT
+adapter_name_or_path: ../SA-DPO/Model/SALV-SA-DPO
+template: qwen
+finetuning_type: lora
+trust_remote_code: true
+
+### export
+export_dir:  ../SA-DPO/Model/SALV-SA-DPO-merged
+export_size: 5
+export_device: cuda
+export_legacy_format: false

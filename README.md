@@ -64,13 +64,19 @@ else:
 
 ## Training
 ### Install
-1. LLaMA-Factory for SALV
+1. Basic conda environment
+```
+conda create -n SALV python==3.11.0
+conda activate SALV
+pip install -r requirements.txt
+```
+2. LLaMA-Factory for SALV
 ```
 cd LLaMA-Factory
 pip install -e .
 ```
 
-2. iverilog and yoysy
+3. iverilog and yoysy
 ```
 sudo apt install iverilog
 sudo apt install yosys
@@ -100,6 +106,7 @@ sh get_sa_dpo_training_data.sh
 ```
 cd LLaMA-Factory
 FORCE_TORCHRUN=1 llamafactory-cli train ../SA-DPO/train_sa_dpo.yaml
+llamafactory-cli export ../SA-DPO/merge_lora.yaml
 ```
 
 For more details, please refer to `SA-DPO/README.md`.
@@ -117,3 +124,10 @@ For more details, please refer to `SA-DPO/README.md`.
 }
 ```
 
+## Acknowledgements 
+- [LLaMA-Factory](https://github.com/hiyouga/LLaMA-Factory)
+- [vllm](https://github.com/vllm-project/vllm)
+- [yosys](https://github.com/YosysHQ/yosys)
+- [iverilog](https://github.com/steveicarus/iverilog)
+
+We extend our sincere thanks to the creators of these projects for their contributions to the field and for making their code available. 
