@@ -5,8 +5,32 @@ import subprocess
 import tempfile
 import ray
 from ray.experimental.tqdm_ray import tqdm
-from utils import VerilogExecutionError,kill_processes
+import psutil
 import argparse
+
+class VerilogExecutionError(Exception):
+    def __init__(self, message,error_type):
+        super().__init__(error_type)
+        self.type=error_type
+        self.error_message=message
+
+def kill_processes(active_processes):
+    for process in active_processes:
+        if process.poll() is None:  
+            kill_process_tree(process.pid)
+    active_processes.clear()  
+
+def kill_process_tree(pid):
+    try:
+        parent = psutil.Process(pid)
+        for child in parent.children(recursive=True):  
+            child.kill()
+        parent.kill()
+    except psutil.NoSuchProcess:
+        pass  
+    except:
+        pass
+
 
 parser = argparse.ArgumentParser(description='Process some test.')
 
@@ -86,7 +110,7 @@ if __name__ == "__main__":
     sim_info_data=json.load(open(args.sim_info_path))
     rollout_data=json.load(open(args.rollout_data))
     print("Sim info data loaded", len(sim_info_data))
-
+    
     ray.init()
     
     NUM_WORKERS = 80

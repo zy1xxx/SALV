@@ -1,4 +1,4 @@
-# Copyright 2024 the LlamaFactory team.
+# Copyright 2025 the LlamaFactory team.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -19,32 +19,32 @@ import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
-from typing import TYPE_CHECKING, Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 import torch
 import transformers
 from peft import PeftModel
 from transformers import PreTrainedModel, ProcessorMixin, TrainerCallback
 from transformers.trainer_utils import PREFIX_CHECKPOINT_DIR, has_length
-from transformers.utils import (
-    SAFE_WEIGHTS_NAME,
-    WEIGHTS_NAME,
-    is_safetensors_available,
-)
+from transformers.utils import SAFE_WEIGHTS_NAME, WEIGHTS_NAME
 from typing_extensions import override
 
 from ..extras import logging
 from ..extras.constants import TRAINER_LOG, V_HEAD_SAFE_WEIGHTS_NAME, V_HEAD_WEIGHTS_NAME
-from ..extras.misc import get_peak_memory
+from ..extras.misc import get_peak_memory, is_env_enabled, use_ray
+from ..extras.packages import is_safetensors_available
 
 
 if is_safetensors_available():
     from safetensors import safe_open
     from safetensors.torch import save_file
 
+
 if TYPE_CHECKING:
     from transformers import TrainerControl, TrainerState, TrainingArguments
     from trl import AutoModelForCausalLMWithValueHead
+
+    from ..hparams import DataArguments, FinetuningArguments, GeneratingArguments, ModelArguments
 
 
 logger = logging.get_logger(__name__)
@@ -53,7 +53,8 @@ logger = logging.get_logger(__name__)
 def fix_valuehead_checkpoint(
     model: "AutoModelForCausalLMWithValueHead", output_dir: str, safe_serialization: bool
 ) -> None:
-    r"""
+    r"""Fix the valuehead checkpoint files.
+
     The model is already unwrapped.
 
     There are three cases:
@@ -69,10 +70,10 @@ def fix_valuehead_checkpoint(
     if safe_serialization:
         path_to_checkpoint = os.path.join(output_dir, SAFE_WEIGHTS_NAME)
         with safe_open(path_to_checkpoint, framework="pt", device="cpu") as f:
-            state_dict: Dict[str, torch.Tensor] = {key: f.get_tensor(key) for key in f.keys()}
+            state_dict: dict[str, torch.Tensor] = {key: f.get_tensor(key).clone() for key in f.keys()}
     else:
         path_to_checkpoint = os.path.join(output_dir, WEIGHTS_NAME)
-        state_dict: Dict[str, torch.Tensor] = torch.load(path_to_checkpoint, map_location="cpu")
+        state_dict: dict[str, torch.Tensor] = torch.load(path_to_checkpoint, map_location="cpu", weights_only=True)
 
     os.remove(path_to_checkpoint)
     decoder_state_dict, v_head_state_dict = {}, {}
@@ -95,15 +96,10 @@ def fix_valuehead_checkpoint(
 
 
 class FixValueHeadModelCallback(TrainerCallback):
-    r"""
-    A callback for fixing the checkpoint for valuehead models.
-    """
+    r"""A callback for fixing the checkpoint for valuehead models."""
 
     @override
     def on_save(self, args: "TrainingArguments", state: "TrainerState", control: "TrainerControl", **kwargs):
-        r"""
-        Event called after a checkpoint save.
-        """
         if args.should_save:
             output_dir = os.path.join(args.output_dir, f"{PREFIX_CHECKPOINT_DIR}-{state.global_step}")
             fix_valuehead_checkpoint(
@@ -112,9 +108,7 @@ class FixValueHeadModelCallback(TrainerCallback):
 
 
 class SaveProcessorCallback(TrainerCallback):
-    r"""
-    A callback for saving the processor.
-    """
+    r"""A callback for saving the processor."""
 
     def __init__(self, processor: "ProcessorMixin") -> None:
         self.processor = processor
@@ -132,15 +126,10 @@ class SaveProcessorCallback(TrainerCallback):
 
 
 class PissaConvertCallback(TrainerCallback):
-    r"""
-    A callback for converting the PiSSA adapter to a normal one.
-    """
+    r"""A callback for converting the PiSSA adapter to a normal one."""
 
     @override
     def on_train_begin(self, args: "TrainingArguments", state: "TrainerState", control: "TrainerControl", **kwargs):
-        r"""
-        Event called at the beginning of training.
-        """
         if args.should_save:
             model = kwargs.pop("model")
             pissa_init_dir = os.path.join(args.output_dir, "pissa_init")
@@ -169,20 +158,17 @@ class PissaConvertCallback(TrainerCallback):
                 model.save_pretrained(pissa_backup_dir, safe_serialization=args.save_safetensors)
                 setattr(model.peft_config["default"], "init_lora_weights", init_lora_weights)
                 model.save_pretrained(
-                    pissa_convert_dir, safe_serialization=args.save_safetensors, convert_pissa_to_lora=pissa_init_dir
-                )  # TODO: use `path_initial_model_for_weight_conversion` (peft>=0.12.0)
+                    pissa_convert_dir,
+                    safe_serialization=args.save_safetensors,
+                    path_initial_model_for_weight_conversion=pissa_init_dir,
+                )
                 model.load_adapter(pissa_backup_dir, "default", is_trainable=True)
                 model.set_adapter("default")
-                if "pissa_init" in model.peft_config.keys():  # backward compatibility (peft<0.12.0)
-                    model.delete_adapter("pissa_init")
-
                 setattr(model.peft_config["default"], "init_lora_weights", init_lora_weights)
 
 
 class LogCallback(TrainerCallback):
-    r"""
-    A callback for logging training and evaluation status.
-    """
+    r"""A callback for logging training and evaluation status."""
 
     def __init__(self) -> None:
         # Progress
@@ -191,15 +177,15 @@ class LogCallback(TrainerCallback):
         self.max_steps = 0
         self.elapsed_time = ""
         self.remaining_time = ""
-        self.thread_pool: Optional["ThreadPoolExecutor"] = None
+        self.thread_pool: Optional[ThreadPoolExecutor] = None
         # Status
         self.aborted = False
         self.do_train = False
         # Web UI
-        self.webui_mode = os.environ.get("LLAMABOARD_ENABLED", "0").lower() in ["true", "1"]
-        if self.webui_mode:
+        self.webui_mode = is_env_enabled("LLAMABOARD_ENABLED")
+        if self.webui_mode and not use_ray():
             signal.signal(signal.SIGABRT, self._set_abort)
-            self.logger_handler = logging.LoggerHandler(os.environ.get("LLAMABOARD_WORKDIR"))
+            self.logger_handler = logging.LoggerHandler(os.getenv("LLAMABOARD_WORKDIR"))
             logging.add_handler(self.logger_handler)
             transformers.logging.add_handler(self.logger_handler)
 
@@ -222,7 +208,7 @@ class LogCallback(TrainerCallback):
         self.elapsed_time = str(timedelta(seconds=int(elapsed_time)))
         self.remaining_time = str(timedelta(seconds=int(remaining_time)))
 
-    def _write_log(self, output_dir: str, logs: Dict[str, Any]) -> None:
+    def _write_log(self, output_dir: str, logs: dict[str, Any]) -> None:
         with open(os.path.join(output_dir, TRAINER_LOG), "a", encoding="utf-8") as f:
             f.write(json.dumps(logs) + "\n")
 
@@ -242,7 +228,7 @@ class LogCallback(TrainerCallback):
             and os.path.exists(os.path.join(args.output_dir, TRAINER_LOG))
             and args.overwrite_output_dir
         ):
-            logger.warning_once("Previous trainer log in this folder will be deleted.")
+            logger.warning_rank0_once("Previous trainer log in this folder will be deleted.")
             os.remove(os.path.join(args.output_dir, TRAINER_LOG))
 
     @override
@@ -302,7 +288,7 @@ class LogCallback(TrainerCallback):
             logs["throughput"] = round(state.num_input_tokens_seen / (time.time() - self.start_time), 2)
             logs["total_tokens"] = state.num_input_tokens_seen
 
-        if os.environ.get("RECORD_VRAM", "0").lower() in ["true", "1"]:
+        if is_env_enabled("RECORD_VRAM"):
             vram_allocated, vram_reserved = get_peak_memory()
             logs["vram_allocated"] = round(vram_allocated / (1024**3), 2)
             logs["vram_reserved"] = round(vram_reserved / (1024**3), 2)
@@ -348,3 +334,49 @@ class LogCallback(TrainerCallback):
                     remaining_time=self.remaining_time,
                 )
                 self.thread_pool.submit(self._write_log, args.output_dir, logs)
+
+
+class ReporterCallback(TrainerCallback):
+    r"""A callback for reporting training status to external logger."""
+
+    def __init__(
+        self,
+        model_args: "ModelArguments",
+        data_args: "DataArguments",
+        finetuning_args: "FinetuningArguments",
+        generating_args: "GeneratingArguments",
+    ) -> None:
+        self.model_args = model_args
+        self.data_args = data_args
+        self.finetuning_args = finetuning_args
+        self.generating_args = generating_args
+        os.environ["WANDB_PROJECT"] = os.getenv("WANDB_PROJECT", "llamafactory")
+
+    @override
+    def on_train_begin(self, args: "TrainingArguments", state: "TrainerState", control: "TrainerControl", **kwargs):
+        if not state.is_world_process_zero:
+            return
+
+        if "wandb" in args.report_to:
+            import wandb
+
+            wandb.config.update(
+                {
+                    "model_args": self.model_args.to_dict(),
+                    "data_args": self.data_args.to_dict(),
+                    "finetuning_args": self.finetuning_args.to_dict(),
+                    "generating_args": self.generating_args.to_dict(),
+                }
+            )
+
+        if self.finetuning_args.use_swanlab:
+            import swanlab  # type: ignore
+
+            swanlab.config.update(
+                {
+                    "model_args": self.model_args.to_dict(),
+                    "data_args": self.data_args.to_dict(),
+                    "finetuning_args": self.finetuning_args.to_dict(),
+                    "generating_args": self.generating_args.to_dict(),
+                }
+            )

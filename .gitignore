@@ -1,0 +1,7 @@
+*.err
+*.out
+*.slurm
+tmp*.py
+Data/
+Model/
+__pycache__/

@@ -1,4 +1,4 @@
-# Copyright 2024 HuggingFace Inc. and the LlamaFactory team.
+# Copyright 2025 HuggingFace Inc. and the LlamaFactory team.
 #
 # This code is inspired by the HuggingFace's TRL library.
 # https://github.com/huggingface/trl/blob/v0.8.0/trl/trainer/dpo_trainer.py
@@ -19,7 +19,7 @@ import warnings
 from collections import defaultdict
 from contextlib import nullcontext
 from types import MethodType
-from typing import TYPE_CHECKING, Dict, List, Literal, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Literal, Optional, Union
 
 import torch
 import torch.nn.functional as F
@@ -29,15 +29,16 @@ from trl.trainer import disable_dropout_in_model
 from typing_extensions import override
 
 from ...extras.constants import IGNORE_INDEX
-from ...extras.packages import is_transformers_version_equal_to_4_46
-from ..callbacks import PissaConvertCallback, SaveProcessorCallback
-from ..trainer_utils import create_custom_optimizer, create_custom_scheduler, get_batch_logps
+from ...extras.packages import is_transformers_version_greater_than
+from ..callbacks import SaveProcessorCallback
+from ..trainer_utils import create_custom_optimizer, create_custom_scheduler, get_batch_logps, nested_detach
 
 
 if TYPE_CHECKING:
     from transformers import PreTrainedModel, ProcessorMixin
 
     from ...hparams import FinetuningArguments
+
 
 class CustomDPOTrainer(DPOTrainer):
     def __init__(
@@ -49,6 +50,9 @@ class CustomDPOTrainer(DPOTrainer):
         disable_dropout: bool = True,
         **kwargs,
     ):
+        if is_transformers_version_greater_than("4.46"):
+            kwargs["processing_class"] = kwargs.pop("tokenizer")
+
         if disable_dropout:
             disable_dropout_in_model(model)
             if ref_model is not None:
@@ -74,10 +78,13 @@ class CustomDPOTrainer(DPOTrainer):
         self.beta = finetuning_args.pref_beta
         self.loss_type = finetuning_args.pref_loss
         self.ftx_gamma = finetuning_args.pref_ftx
+        self.bco_gemma = finetuning_args.pref_bco_weight
         self.label_smoothing = finetuning_args.dpo_label_smoothing
         self.simpo_gamma = finetuning_args.simpo_gamma
+        self.ld_alpha = finetuning_args.ld_alpha
 
         Trainer.__init__(self, model=model, **kwargs)
+        self.model_accepts_loss_kwargs = False  # overwrite trainer's default behavior
         if not hasattr(self, "accelerator"):
             raise AttributeError("Please update `transformers`.")
 
@@ -96,14 +103,16 @@ class CustomDPOTrainer(DPOTrainer):
         if processor is not None:
             self.add_callback(SaveProcessorCallback(processor))
 
-        if finetuning_args.pissa_convert:
-            self.callback_handler.add_callback(PissaConvertCallback)
-
         if finetuning_args.use_badam:
             from badam import BAdamCallback, clip_grad_norm_old_version  # type: ignore
 
             self.accelerator.clip_grad_norm_ = MethodType(clip_grad_norm_old_version, self.accelerator)
             self.add_callback(BAdamCallback)
+
+        if self.bco_gemma >= 1e-6:
+            from trl.trainer import RunningMoments
+
+            self.running = RunningMoments(self.accelerator)
 
     @override
     def create_optimizer(self) -> "torch.optim.Optimizer":
@@ -119,23 +128,19 @@ class CustomDPOTrainer(DPOTrainer):
         return super().create_scheduler(num_training_steps, optimizer)
 
     @override
-    def _get_train_sampler(self) -> Optional["torch.utils.data.Sampler"]:
+    def _get_train_sampler(self, *args, **kwargs) -> Optional["torch.utils.data.Sampler"]:
         if self.finetuning_args.disable_shuffling:
             return torch.utils.data.SequentialSampler(self.train_dataset)
 
-        return super()._get_train_sampler()
+        return super()._get_train_sampler(*args, **kwargs)
 
     @override
-    def get_batch_samples(self, epoch_iterator, num_batches):
-        r"""
-        Replaces the method of KTO Trainer with the one of the standard Trainer.
-        """
-        return Trainer.get_batch_samples(self, epoch_iterator, num_batches)
+    def get_batch_samples(self, *args, **kwargs):
+        r"""Replace the method of DPO Trainer with the one of the standard Trainer."""
+        return Trainer.get_batch_samples(self, *args, **kwargs)
 
     def odds_ratio_loss(self, chosen_logps: "torch.Tensor", rejected_logps: "torch.Tensor") -> "torch.Tensor":
-        r"""
-        Computes ORPO's odds ratio (OR) loss for batched log probabilities of the policy model.
-        """
+        r"""Compute ORPO's odds ratio (OR) loss for batched log probabilities of the policy model."""
         log_odds = (chosen_logps - rejected_logps) - (
             torch.log1p(-torch.exp(chosen_logps)) - torch.log1p(-torch.exp(rejected_logps))
         )
@@ -145,14 +150,31 @@ class CustomDPOTrainer(DPOTrainer):
         return orpo_loss
 
     def simpo_loss(self, chosen_logps: "torch.Tensor", rejected_logps: "torch.Tensor") -> "torch.Tensor":
-        r"""
-        Computes SimPO loss for batched log probabilities of the policy model.
-        """
+        r"""Compute SimPO loss for batched log probabilities of the policy model."""
         pi_logratios = chosen_logps - rejected_logps
         gamma_logratios = self.simpo_gamma / self.beta
         logits = pi_logratios - gamma_logratios
         simpo_loss = -F.logsigmoid(self.beta * logits)
         return simpo_loss
+
+    def bco_loss(
+        self,
+        chosen_logps: "torch.Tensor",
+        rejected_logps: "torch.Tensor",
+        reference_chosen_logps: "torch.Tensor",
+        reference_rejected_logps: "torch.Tensor",
+    ) -> "torch.Tensor":
+        chosen_logratios = chosen_logps - reference_chosen_logps
+        rejected_logratios = rejected_logps - reference_rejected_logps
+        chosen_rewards = self.beta * chosen_logratios
+        rejected_rewards = self.beta * rejected_logratios
+        rewards = torch.cat((chosen_rewards, rejected_rewards), 0).mean().detach()
+        self.running.update(rewards)  # update baseline
+        delta = self.running.mean
+        bco_loss = -F.logsigmoid((self.beta * chosen_logratios) - delta) - F.logsigmoid(
+            -(self.beta * rejected_logratios - delta)
+        )
+        return bco_loss
 
     def compute_preference_loss(
         self,
@@ -160,10 +182,8 @@ class CustomDPOTrainer(DPOTrainer):
         policy_rejected_logps: "torch.Tensor",
         reference_chosen_logps: Optional["torch.Tensor"],
         reference_rejected_logps: Optional["torch.Tensor"],
-    ) -> Tuple["torch.Tensor", "torch.Tensor", "torch.Tensor"]:
-        r"""
-        Computes loss for preference learning.
-        """
+    ) -> tuple["torch.Tensor", "torch.Tensor", "torch.Tensor"]:
+        r"""Compute loss for preference learning."""
         if not self.finetuning_args.use_ref_model:
             if self.loss_type == "orpo":
                 losses = self.odds_ratio_loss(policy_chosen_logps, policy_rejected_logps)
@@ -179,22 +199,29 @@ class CustomDPOTrainer(DPOTrainer):
                 policy_chosen_logps, policy_rejected_logps, reference_chosen_logps, reference_rejected_logps
             )
 
+            if self.bco_gemma > 1e-6:
+                bco_losses = self.bco_loss(
+                    policy_chosen_logps, policy_rejected_logps, reference_chosen_logps, reference_rejected_logps
+                )
+                losses = (losses + bco_losses * self.bco_gemma) / (1.0 + self.bco_gemma)  # re-weight W_p and W_q
+
         return losses, chosen_rewards, rejected_rewards
 
     @override
     def concatenated_forward(
-        self, model: "PreTrainedModel", batch: Dict[str, "torch.Tensor"]
-    ) -> Tuple["torch.Tensor", "torch.Tensor", "torch.Tensor", "torch.Tensor", "torch.Tensor"]:
-        r"""
-        Computes the sum log probabilities of the labels under given logits if loss_type is not IPO, ORPO or SimPO.
+        self, model: "PreTrainedModel", batch: dict[str, "torch.Tensor"], is_ref_model: bool = False
+    ) -> tuple["torch.Tensor", "torch.Tensor", "torch.Tensor", "torch.Tensor", "torch.Tensor"]:
+        r"""Compute the sum log probabilities of the labels under given logits if loss_type is not IPO, ORPO or SimPO.
 
         Otherwise the average log probabilities.
         """
         if self.finetuning_args.use_ref_model:
-            batch = {k: v.detach().clone() for k, v in batch.items()}  # avoid error
+            batch = nested_detach(batch, clone=True)  # avoid error
 
-        all_logits: "torch.Tensor" = model(**batch, return_dict=True, use_cache=False).logits.to(torch.float32)
-        all_logps, valid_length = get_batch_logps(logits=all_logits, labels=batch["labels"])
+        all_logits: torch.Tensor = model(**batch, return_dict=True, use_cache=False).logits.to(torch.float32)
+        all_logps, valid_length = get_batch_logps(
+            logits=all_logits, labels=batch["labels"], ld_alpha=(self.ld_alpha if not is_ref_model else None)
+        )
         if self.loss_type in ["ipo", "orpo", "simpo"]:
             all_logps = all_logps / valid_length
 
@@ -202,15 +229,17 @@ class CustomDPOTrainer(DPOTrainer):
         chosen_logps, rejected_logps = all_logps.split(batch_size, dim=0)
         chosen_logits, rejected_logits = all_logits.split(batch_size, dim=0)
         chosen_length, _ = valid_length.split(batch_size, dim=0)
-        return chosen_logps, rejected_logps, chosen_logits, rejected_logits, chosen_logps / chosen_length
+
+        if self.loss_type in ["ipo", "orpo", "simpo"]:
+            return chosen_logps, rejected_logps, chosen_logits, rejected_logits, chosen_logps
+        else:
+            return chosen_logps, rejected_logps, chosen_logits, rejected_logits, chosen_logps / chosen_length
 
     @override
     def compute_reference_log_probs(
-        self, model: "PreTrainedModel", batch: Dict[str, "torch.Tensor"]
-    ) -> Tuple[Optional["torch.Tensor"], Optional["torch.Tensor"]]:
-        r"""
-        Computes log probabilities of the reference model.
-        """
+        self, model: "PreTrainedModel", batch: dict[str, "torch.Tensor"]
+    ) -> tuple[Optional["torch.Tensor"], Optional["torch.Tensor"]]:
+        r"""Compute log probabilities of the reference model."""
         if not self.finetuning_args.use_ref_model:
             return None, None
 
@@ -222,7 +251,9 @@ class CustomDPOTrainer(DPOTrainer):
             ref_context = nullcontext()
 
         with torch.no_grad(), ref_context:
-            reference_chosen_logps, reference_rejected_logps, *_ = self.concatenated_forward(ref_model, batch)
+            reference_chosen_logps, reference_rejected_logps, *_ = self.concatenated_forward(
+                ref_model, batch, is_ref_model=True
+            )
 
         return reference_chosen_logps, reference_rejected_logps
 
@@ -230,12 +261,10 @@ class CustomDPOTrainer(DPOTrainer):
     def get_batch_loss_metrics(
         self,
         model: "PreTrainedModel",
-        batch: Dict[str, "torch.Tensor"],
+        batch: dict[str, "torch.Tensor"],
         train_eval: Literal["train", "eval"] = "train",
-    ) -> Tuple["torch.Tensor", Dict[str, "torch.Tensor"]]:
-        r"""
-        Computes the DPO loss and other metrics for the given batch of inputs for train or test.
-        """
+    ) -> tuple["torch.Tensor", dict[str, "torch.Tensor"]]:
+        r"""Compute the DPO loss and other metrics for the given batch of inputs for train or test."""
         metrics = {}
         (
             policy_chosen_logps,
@@ -273,26 +302,14 @@ class CustomDPOTrainer(DPOTrainer):
 
     @override
     def compute_loss(
-        self, model: "PreTrainedModel", inputs: Dict[str, "torch.Tensor"], return_outputs: bool = False, **kwargs
-    ) -> Union["torch.Tensor", Tuple["torch.Tensor", List["torch.Tensor"]]]:
-        r"""
-        Fixes the loss value for transformers 4.46.0.
-        https://github.com/huggingface/transformers/blob/v4.46.0/src/transformers/trainer.py#L3605
-        """
-        loss = super().compute_loss(model, inputs, return_outputs)
-        if is_transformers_version_equal_to_4_46() and kwargs.pop("num_items_in_batch", False):
-            if return_outputs:
-                return (loss[0] / self.args.gradient_accumulation_steps, *loss[1:])
-            else:
-                return loss / self.args.gradient_accumulation_steps
-
-        return loss
+        self, model: "PreTrainedModel", inputs: dict[str, "torch.Tensor"], return_outputs: bool = False, **kwargs
+    ) -> Union["torch.Tensor", tuple["torch.Tensor", list["torch.Tensor"]]]:
+        r"""Subclass and override to accept extra kwargs."""
+        return super().compute_loss(model, inputs, return_outputs)
 
     @override
-    def log(self, logs: Dict[str, float]) -> None:
-        r"""
-        Log `logs` on the various objects watching training, including stored metrics.
-        """
+    def log(self, logs: dict[str, float], *args, **kwargs) -> None:
+        r"""Log `logs` on the various objects watching training, including stored metrics."""
         # logs either has "loss" or "eval_loss"
         train_eval = "train" if "loss" in logs else "eval"
         # Add averaged stored metrics to logs
@@ -313,4 +330,4 @@ class CustomDPOTrainer(DPOTrainer):
             if not key.startswith("dummy_"):
                 logs[key] = metric
 
-        return Trainer.log(self, logs)
+        return Trainer.log(self, logs, *args, **kwargs)

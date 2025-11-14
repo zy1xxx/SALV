@@ -13,7 +13,7 @@ new_ls=[]
 for problem_item in problem_ls:
     problem_id=problem_item["problem_id"]
     instruction=problem_item["instruction"]
-    response=problem_item["response"]
+    gold_code=problem_item["gold_code"]
     port_names=problem_item["port_names"]
     testbench=problem_item["testbench"]
     pattern_module = r"module\s+([a-zA-Z0-9_]+)\s*(#\s*\([\s\S]+\))?\s*(//.*\s)?\([\s\S]+?\);"
@@ -34,5 +34,5 @@ for problem_item in problem_ls:
             else:
                 in_output_string+=f"\t{name}\n"
         prompt=f"Please act as a professional verilog designer.\n{description}\nModule name:\n\t{module_name}\nInput ports:\n{input_string}Output ports:\n{output_string}\nGive me the complete code."
-        new_ls.append({"problem_id":problem_id,"instruction":prompt,"response":response,"port_names":port_names,"testbench":testbench})
+        new_ls.append({"problem_id":problem_id,"instruction":prompt,"gold_code":gold_code,"port_names":port_names,"testbench":testbench})
 json.dump(new_ls,open(args.save_path,"w"),indent=2)

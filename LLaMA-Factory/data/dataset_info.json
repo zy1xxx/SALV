@@ -8,7 +8,7 @@
         }
     },
     "SALV_SA_DPO_Data": {
-        "file_name": "../../SFT/Data/sa_dpo_training_data.json",
+        "file_name": "../../SA-DPO/Data/sa_dpo_training_data.json",
         "ranking": true,
         "columns": {
             "prompt": "instruction",
@@ -17,7 +17,7 @@
         }
     },
     "SALV_SA_DPO_Data_Spec": {
-        "file_name": "../../SFT/Data/sa_dpo_training_data_spec.json",
+        "file_name": "../../SA-DPO/Data/sa_dpo_training_data_spec.json",
         "ranking": true,
         "columns": {
             "prompt": "instruction",

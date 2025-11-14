@@ -1,5 +1,4 @@
 # QiMeng-SALV: Signal-Aware Learning for Verilog Code Generation
-
 ![overview](./assets/overview.svg)
 
 QiMeng-SALV introduces a novel framework for Verilog code generation that shifts reinforcement learning optimization from module-level to signal-level rewards. By leveraging AST analysis and signal-aware verification, it extracts functionally correct code segments from partially incorrect modules, enabling more effective RL training.

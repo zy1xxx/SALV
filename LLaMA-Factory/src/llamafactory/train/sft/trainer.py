@@ -1,4 +1,4 @@
-# Copyright 2024 HuggingFace Inc. and the LlamaFactory team.
+# Copyright 2025 HuggingFace Inc. and the LlamaFactory team.
 #
 # This code is inspired by the HuggingFace's transformers library.
 # https://github.com/huggingface/transformers/blob/v4.40.0/src/transformers/trainer_seq2seq.py
@@ -18,7 +18,7 @@
 import json
 import os
 from types import MethodType
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Any, Optional, Union
 
 import numpy as np
 import torch
@@ -27,49 +27,70 @@ from typing_extensions import override
 
 from ...extras import logging
 from ...extras.constants import IGNORE_INDEX
-from ...extras.packages import is_transformers_version_equal_to_4_46, is_transformers_version_greater_than
-from ..callbacks import PissaConvertCallback, SaveProcessorCallback
+from ...extras.packages import is_transformers_version_greater_than
+from ..callbacks import SaveProcessorCallback
+from ..fp8_utils import configure_fp8_environment, verify_fp8_status
 from ..trainer_utils import create_custom_optimizer, create_custom_scheduler
 
 
 if TYPE_CHECKING:
     from torch.utils.data import Dataset
-    from transformers import PreTrainedModel, PreTrainedTokenizer, ProcessorMixin
+    from transformers import PreTrainedTokenizer, ProcessorMixin
     from transformers.trainer import PredictionOutput
 
-    from ...hparams import FinetuningArguments
+    from ...hparams import FinetuningArguments, ModelArguments
 
 
 logger = logging.get_logger(__name__)
 
 
 class CustomSeq2SeqTrainer(Seq2SeqTrainer):
-    r"""
-    Inherits Seq2SeqTrainer to compute generative metrics such as BLEU and ROUGE.
-    """
+    r"""Inherits Seq2SeqTrainer to compute generative metrics such as BLEU and ROUGE."""
 
     def __init__(
-        self, finetuning_args: "FinetuningArguments", processor: Optional["ProcessorMixin"], **kwargs
+        self,
+        finetuning_args: "FinetuningArguments",
+        processor: Optional["ProcessorMixin"],
+        model_args: Optional["ModelArguments"] = None,
+        gen_kwargs: Optional[dict[str, Any]] = None,
+        **kwargs,
     ) -> None:
+        # Configure FP8 environment if enabled
+        if model_args is not None and model_args.fp8:
+            configure_fp8_environment(model_args)
         if is_transformers_version_greater_than("4.46"):
             kwargs["processing_class"] = kwargs.pop("tokenizer")
         else:
-            self.processing_class: "PreTrainedTokenizer" = kwargs.get("tokenizer")
+            self.processing_class: PreTrainedTokenizer = kwargs.get("tokenizer")
 
         super().__init__(**kwargs)
+        if processor is not None:
+            # avoid wrong loss under gradient accumulation
+            # https://github.com/huggingface/transformers/pull/36044#issuecomment-2746657112
+            self.model_accepts_loss_kwargs = False
+
         self.finetuning_args = finetuning_args
+        if gen_kwargs is not None:
+            # https://github.com/huggingface/transformers/blob/v4.45.0/src/transformers/trainer_seq2seq.py#L287
+            self._gen_kwargs = gen_kwargs
 
         if processor is not None:
             self.add_callback(SaveProcessorCallback(processor))
-
-        if finetuning_args.pissa_convert:
-            self.add_callback(PissaConvertCallback)
 
         if finetuning_args.use_badam:
             from badam import BAdamCallback, clip_grad_norm_old_version  # type: ignore
 
             self.accelerator.clip_grad_norm_ = MethodType(clip_grad_norm_old_version, self.accelerator)
             self.add_callback(BAdamCallback)
+
+        if finetuning_args.use_dft_loss:
+            from ..trainer_utils import dft_loss_func
+
+            self.compute_loss_func = dft_loss_func
+
+        # Verify FP8 status after trainer initialization (accelerator should be available)
+        if model_args is not None and model_args.fp8 and hasattr(self, "accelerator"):
+            verify_fp8_status(self.accelerator, model_args)
 
     @override
     def create_optimizer(self) -> "torch.optim.Optimizer":
@@ -85,76 +106,47 @@ class CustomSeq2SeqTrainer(Seq2SeqTrainer):
         return super().create_scheduler(num_training_steps, optimizer)
 
     @override
-    def _get_train_sampler(self) -> Optional["torch.utils.data.Sampler"]:
+    def _get_train_sampler(self, *args, **kwargs) -> Optional["torch.utils.data.Sampler"]:
         if self.finetuning_args.disable_shuffling:
             return torch.utils.data.SequentialSampler(self.train_dataset)
 
-        return super()._get_train_sampler()
+        return super()._get_train_sampler(*args, **kwargs)
 
     @override
-    def compute_loss(
-        self, model: "PreTrainedModel", inputs: Dict[str, "torch.Tensor"], return_outputs: bool = False, **kwargs
-    ) -> Union["torch.Tensor", Tuple["torch.Tensor", List["torch.Tensor"]]]:
-        r"""
-        Fixes the loss value for transformers 4.46.0.
-        https://github.com/huggingface/transformers/blob/v4.46.0/src/transformers/trainer.py#L3605
-        """
-        loss = super().compute_loss(model, inputs, return_outputs, **kwargs)
-        if is_transformers_version_equal_to_4_46() and not getattr(self, "model_accepts_loss_kwargs", False):
-            # other model should not scale the loss
-            if return_outputs:
-                return (loss[0] / self.args.gradient_accumulation_steps, *loss[1:])
-            else:
-                return loss / self.args.gradient_accumulation_steps
-
-        return loss
+    def compute_loss(self, model, inputs, *args, **kwargs):
+        return super().compute_loss(model, inputs, *args, **kwargs)
 
     @override
     def prediction_step(
         self,
         model: "torch.nn.Module",
-        inputs: Dict[str, Union["torch.Tensor", Any]],
+        inputs: dict[str, Union["torch.Tensor", Any]],
         prediction_loss_only: bool,
-        ignore_keys: Optional[List[str]] = None,
-    ) -> Tuple[Optional[float], Optional["torch.Tensor"], Optional["torch.Tensor"]]:
-        r"""
-        Removes the prompt part in the generated tokens.
+        ignore_keys: Optional[list[str]] = None,
+        **gen_kwargs,
+    ) -> tuple[Optional[float], Optional["torch.Tensor"], Optional["torch.Tensor"]]:
+        r"""Remove the prompt part in the generated tokens.
 
         Subclass and override to inject custom behavior.
         """
-        labels = inputs["labels"] if "labels" in inputs else None
-        if self.args.predict_with_generate:
-            assert self.processing_class.padding_side == "left", "This method only accepts left-padded tensor."
-            labels = labels.detach().clone() if labels is not None else None  # backup labels
-            prompt_len, label_len = inputs["input_ids"].size(-1), inputs["labels"].size(-1)
-            if prompt_len > label_len:
-                inputs["labels"] = self._pad_tensors_to_target_len(inputs["labels"], inputs["input_ids"])
-            if label_len > prompt_len:  # truncate the labels instead of padding the inputs (llama2 fp16 compatibility)
-                inputs["labels"] = inputs["labels"][:, :prompt_len]
+        if self.args.predict_with_generate:  # do not pass labels to model when generate
+            labels = inputs.pop("labels", None)
+        else:
+            labels = inputs.get("labels")
 
-        loss, generated_tokens, _ = super().prediction_step(  # ignore the returned labels (may be truncated)
-            model, inputs, prediction_loss_only=prediction_loss_only, ignore_keys=ignore_keys
+        loss, generated_tokens, _ = super().prediction_step(
+            model, inputs, prediction_loss_only=prediction_loss_only, ignore_keys=ignore_keys, **gen_kwargs
         )
         if generated_tokens is not None and self.args.predict_with_generate:
-            generated_tokens[:, :prompt_len] = self.processing_class.pad_token_id
+            generated_tokens[:, : inputs["input_ids"].size(-1)] = self.processing_class.pad_token_id
             generated_tokens = generated_tokens.contiguous()
 
         return loss, generated_tokens, labels
 
-    def _pad_tensors_to_target_len(self, src_tensor: "torch.Tensor", tgt_tensor: "torch.Tensor") -> "torch.Tensor":
-        r"""
-        Pads the tensor to the same length as the target tensor.
-        """
-        assert self.processing_class.pad_token_id is not None, "Pad token is required."
-        padded_tensor = self.processing_class.pad_token_id * torch.ones_like(tgt_tensor)
-        padded_tensor[:, -src_tensor.shape[-1] :] = src_tensor  # adopt left-padding
-        return padded_tensor.contiguous()  # in contiguous memory
-
     def save_predictions(
         self, dataset: "Dataset", predict_results: "PredictionOutput", skip_special_tokens: bool = True
     ) -> None:
-        r"""
-        Saves model predictions to `output_dir`.
+        r"""Save model predictions to `output_dir`.
 
         A custom behavior that not contained in Seq2SeqTrainer.
         """

@@ -1,4 +1,4 @@
-# Copyright 2024 THUDM and the LlamaFactory team.
+# Copyright 2025 THUDM and the LlamaFactory team.
 #
 # This code is inspired by the THUDM's ChatGLM implementation.
 # https://github.com/THUDM/ChatGLM-6B/blob/main/cli_demo.py
@@ -17,17 +17,17 @@
 
 import asyncio
 import os
+from collections.abc import AsyncGenerator, Generator
 from threading import Thread
-from typing import TYPE_CHECKING, Any, AsyncGenerator, Dict, Generator, List, Optional, Sequence
+from typing import TYPE_CHECKING, Any, Optional
 
+from ..extras.constants import EngineName
 from ..extras.misc import torch_gc
 from ..hparams import get_infer_args
-from .hf_engine import HuggingfaceEngine
-from .vllm_engine import VllmEngine
 
 
 if TYPE_CHECKING:
-    from ..data.mm_plugin import ImageInput, VideoInput
+    from ..data.mm_plugin import AudioInput, ImageInput, VideoInput
     from .base_engine import BaseEngine, Response
 
 
@@ -37,21 +37,50 @@ def _start_background_loop(loop: "asyncio.AbstractEventLoop") -> None:
 
 
 class ChatModel:
-    r"""
-    General class for chat models. Backed by huggingface or vllm engines.
+    r"""General class for chat models. Backed by huggingface or vllm engines.
 
     Supports both sync and async methods.
     Sync methods: chat(), stream_chat() and get_scores().
     Async methods: achat(), astream_chat() and aget_scores().
     """
 
-    def __init__(self, args: Optional[Dict[str, Any]] = None) -> None:
+    def __init__(self, args: Optional[dict[str, Any]] = None) -> None:
         model_args, data_args, finetuning_args, generating_args = get_infer_args(args)
-        self.engine_type = model_args.infer_backend
-        if model_args.infer_backend == "huggingface":
-            self.engine: "BaseEngine" = HuggingfaceEngine(model_args, data_args, finetuning_args, generating_args)
-        elif model_args.infer_backend == "vllm":
-            self.engine: "BaseEngine" = VllmEngine(model_args, data_args, finetuning_args, generating_args)
+
+        if model_args.infer_backend == EngineName.HF:
+            from .hf_engine import HuggingfaceEngine
+
+            self.engine: BaseEngine = HuggingfaceEngine(model_args, data_args, finetuning_args, generating_args)
+        elif model_args.infer_backend == EngineName.VLLM:
+            try:
+                from .vllm_engine import VllmEngine
+
+                self.engine: BaseEngine = VllmEngine(model_args, data_args, finetuning_args, generating_args)
+            except ImportError as e:
+                raise ImportError(
+                    "vLLM not install, you may need to run `pip install vllm`\n"
+                    "or try to use HuggingFace backend: --infer_backend huggingface"
+                ) from e
+        elif model_args.infer_backend == EngineName.SGLANG:
+            try:
+                from .sglang_engine import SGLangEngine
+
+                self.engine: BaseEngine = SGLangEngine(model_args, data_args, finetuning_args, generating_args)
+            except ImportError as e:
+                raise ImportError(
+                    "SGLang not install, you may need to run `pip install sglang[all]`\n"
+                    "or try to use HuggingFace backend: --infer_backend huggingface"
+                ) from e
+        elif model_args.infer_backend == EngineName.KT:
+            try:
+                from .kt_engine import KTransformersEngine
+
+                self.engine: BaseEngine = KTransformersEngine(model_args, data_args, finetuning_args, generating_args)
+            except ImportError as e:
+                raise ImportError(
+                    "KTransformers not install, you may need to run `pip install ktransformers`\n"
+                    "or try to use HuggingFace backend: --infer_backend huggingface"
+                ) from e
         else:
             raise NotImplementedError(f"Unknown backend: {model_args.infer_backend}")
 
@@ -61,48 +90,45 @@ class ChatModel:
 
     def chat(
         self,
-        messages: Sequence[Dict[str, str]],
+        messages: list[dict[str, str]],
         system: Optional[str] = None,
         tools: Optional[str] = None,
-        images: Optional[Sequence["ImageInput"]] = None,
-        videos: Optional[Sequence["VideoInput"]] = None,
+        images: Optional[list["ImageInput"]] = None,
+        videos: Optional[list["VideoInput"]] = None,
+        audios: Optional[list["AudioInput"]] = None,
         **input_kwargs,
-    ) -> List["Response"]:
-        r"""
-        Gets a list of responses of the chat model.
-        """
+    ) -> list["Response"]:
+        r"""Get a list of responses of the chat model."""
         task = asyncio.run_coroutine_threadsafe(
-            self.achat(messages, system, tools, images, videos, **input_kwargs), self._loop
+            self.achat(messages, system, tools, images, videos, audios, **input_kwargs), self._loop
         )
         return task.result()
 
     async def achat(
         self,
-        messages: Sequence[Dict[str, str]],
+        messages: list[dict[str, str]],
         system: Optional[str] = None,
         tools: Optional[str] = None,
-        images: Optional[Sequence["ImageInput"]] = None,
-        videos: Optional[Sequence["VideoInput"]] = None,
+        images: Optional[list["ImageInput"]] = None,
+        videos: Optional[list["VideoInput"]] = None,
+        audios: Optional[list["AudioInput"]] = None,
         **input_kwargs,
-    ) -> List["Response"]:
-        r"""
-        Asynchronously gets a list of responses of the chat model.
-        """
-        return await self.engine.chat(messages, system, tools, images, videos, **input_kwargs)
+    ) -> list["Response"]:
+        r"""Asynchronously get a list of responses of the chat model."""
+        return await self.engine.chat(messages, system, tools, images, videos, audios, **input_kwargs)
 
     def stream_chat(
         self,
-        messages: Sequence[Dict[str, str]],
+        messages: list[dict[str, str]],
         system: Optional[str] = None,
         tools: Optional[str] = None,
-        images: Optional[Sequence["ImageInput"]] = None,
-        videos: Optional[Sequence["VideoInput"]] = None,
+        images: Optional[list["ImageInput"]] = None,
+        videos: Optional[list["VideoInput"]] = None,
+        audios: Optional[list["AudioInput"]] = None,
         **input_kwargs,
     ) -> Generator[str, None, None]:
-        r"""
-        Gets the response token-by-token of the chat model.
-        """
-        generator = self.astream_chat(messages, system, tools, images, videos, **input_kwargs)
+        r"""Get the response token-by-token of the chat model."""
+        generator = self.astream_chat(messages, system, tools, images, videos, audios, **input_kwargs)
         while True:
             try:
                 task = asyncio.run_coroutine_threadsafe(generator.__anext__(), self._loop)
@@ -112,38 +138,35 @@ class ChatModel:
 
     async def astream_chat(
         self,
-        messages: Sequence[Dict[str, str]],
+        messages: list[dict[str, str]],
         system: Optional[str] = None,
         tools: Optional[str] = None,
-        images: Optional[Sequence["ImageInput"]] = None,
-        videos: Optional[Sequence["VideoInput"]] = None,
+        images: Optional[list["ImageInput"]] = None,
+        videos: Optional[list["VideoInput"]] = None,
+        audios: Optional[list["AudioInput"]] = None,
         **input_kwargs,
     ) -> AsyncGenerator[str, None]:
-        r"""
-        Asynchronously gets the response token-by-token of the chat model.
-        """
-        async for new_token in self.engine.stream_chat(messages, system, tools, images, videos, **input_kwargs):
+        r"""Asynchronously get the response token-by-token of the chat model."""
+        async for new_token in self.engine.stream_chat(
+            messages, system, tools, images, videos, audios, **input_kwargs
+        ):
             yield new_token
 
     def get_scores(
         self,
-        batch_input: List[str],
+        batch_input: list[str],
         **input_kwargs,
-    ) -> List[float]:
-        r"""
-        Gets a list of scores of the reward model.
-        """
+    ) -> list[float]:
+        r"""Get a list of scores of the reward model."""
         task = asyncio.run_coroutine_threadsafe(self.aget_scores(batch_input, **input_kwargs), self._loop)
         return task.result()
 
     async def aget_scores(
         self,
-        batch_input: List[str],
+        batch_input: list[str],
         **input_kwargs,
-    ) -> List[float]:
-        r"""
-        Asynchronously gets a list of scores of the reward model.
-        """
+    ) -> list[float]:
+        r"""Asynchronously get a list of scores of the reward model."""
         return await self.engine.get_scores(batch_input, **input_kwargs)
 
 

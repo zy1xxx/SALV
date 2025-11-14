@@ -11,6 +11,8 @@ import argparse
 parser = argparse.ArgumentParser(description='Process some test.')
 
 parser.add_argument('--model_name', type=str) 
+parser.add_argument('--seed_data', type=str) 
+parser.add_argument('--rollout_data', type=str) 
 parser.add_argument('--sim_info_path', type=str) 
 parser.add_argument('--ast_path', type=str)
 parser.add_argument('--training_data_save_path', type=str) 
